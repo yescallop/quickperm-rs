@@ -1,0 +1,5 @@
+[package]
+name = "quickperm"
+version = "0.0.1"
+authors = ["Scallop Ye <yescallop@gmail.com>"]
+edition = "2021"
