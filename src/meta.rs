@@ -6,7 +6,7 @@ use core::{
     mem::{self, ManuallyDrop},
     num::NonZeroUsize,
 };
-pub(crate) use internal::Meta;
+pub(crate) use internal::Container;
 
 /// A pair of distinct indexes.
 ///
@@ -85,8 +85,10 @@ impl fmt::Display for IndexPair {
 
 /// Generic meta-permutation generator.
 #[derive(Debug)]
-pub struct MetaPerm<M: Meta> {
-    meta: M,
+pub struct MetaPerm<C: Container> {
+    container: C,
+    // This should fit in a register.
+    i: usize,
 }
 
 impl<const N: usize> MetaPerm<Const<N>> {
@@ -98,10 +100,11 @@ impl<const N: usize> MetaPerm<Const<N>> {
     #[inline]
     pub const fn new_const() -> Self {
         MetaPerm {
-            meta: Const {
-                i: 1,
-                p_headless: Const::<N>::P_HEADLESS,
+            container: Const {
+                p_head: 0,
+                p_body: Const::P_BODY,
             },
+            i: 1,
         }
     }
 
@@ -136,21 +139,18 @@ impl MetaPerm<Dyn> {
         }
 
         MetaPerm {
-            meta: Dyn {
-                p,
-                n: n as u8,
-                i: 1,
-            },
+            container: Dyn { p, n },
+            i: 1,
         }
     }
 }
 
-impl<M: Meta> MetaPerm<M> {
+impl<C: Container> MetaPerm<C> {
     /// Returns an index pair for producing the next unique permutation, or `None`
     /// if all permutations are exhausted.
     #[inline]
     pub fn gen(&mut self) -> Option<IndexPair> {
-        self.meta.gen()
+        self.container.gen(&mut self.i)
     }
 }
 
@@ -162,16 +162,14 @@ impl<M: Meta> MetaPerm<M> {
 #[derive(Debug)]
 #[repr(C)]
 pub struct Const<const N: usize> {
-    // FIXME: Make `i` fit in a register.
-    i: u8,
-    p_headless: [u8; N],
+    p_head: u8,
+    p_body: [u8; N],
 }
 
 impl<const N: usize> Const<N> {
-    // Our lovely array `p` but headless.
-    // p_headless = [1, 2, 3, ..., N]
+    // [1, 2, 3, ..., N]
     #[deny(const_err)]
-    const P_HEADLESS: [u8; N] = {
+    const P_BODY: [u8; N] = {
         let mut out = [0; N];
         let mut i = 0;
         while i < N {
@@ -185,16 +183,11 @@ impl<const N: usize> Const<N> {
 // SAFETY: A `Const<N>` can be interpreted as a valid `u8` array of length `N + 1`,
 // because `Const<N>` has a size of `N + 1` and an alignment of 1.
 // The entire array is properly initialized in `MetaPerm::new_const`.
-unsafe impl<const N: usize> Meta for Const<N> {
+unsafe impl<const N: usize> Container for Const<N> {
     #[inline]
-    fn get_nip(&mut self) -> (u8, u8, *mut u8) {
+    fn size_ptr(&mut self) -> (usize, *mut u8) {
         let p = self as *mut _ as *mut u8;
-        (N as u8, self.i, p)
-    }
-
-    #[inline]
-    fn set_i(&mut self, i: u8) {
-        self.i = i;
+        (N, p)
     }
 }
 
@@ -202,14 +195,13 @@ unsafe impl<const N: usize> Meta for Const<N> {
 #[derive(Debug)]
 pub struct Dyn {
     p: *mut u8,
-    n: u8,
-    i: u8,
+    n: usize,
 }
 
 impl Drop for Dyn {
     #[inline]
     fn drop(&mut self) {
-        let size = self.n as usize + 1;
+        let size = self.n + 1;
         // SAFETY: `p` is allocated via `Vec` with capacity `n + 1`.
         // The entire array is properly initialized in `MetaPerm::new`.
         unsafe {
@@ -220,50 +212,41 @@ impl Drop for Dyn {
 
 // SAFETY: `p` is allocated via `Vec` with capacity `n + 1`.
 // The entire array is properly initialized in `MetaPerm::new`.
-unsafe impl Meta for Dyn {
+unsafe impl Container for Dyn {
     #[inline]
-    fn get_nip(&mut self) -> (u8, u8, *mut u8) {
-        (self.n, self.i, self.p)
-    }
-
-    #[inline]
-    fn set_i(&mut self, i: u8) {
-        self.i = i;
+    fn size_ptr(&mut self) -> (usize, *mut u8) {
+        (self.n, self.p)
     }
 }
 
 mod internal {
     use super::IndexPair;
 
-    /// Helper trait for a meta-permutation generator.
+    /// Trait for a container used by `MetaPerm`.
     ///
-    /// This trait requires three variables `n`, `i`, `p`.
+    /// This trait requires two variables, a size `n` and a pointer `p`.
     ///
     /// # Safety
     ///
-    /// Implementations must ensure that `n`, `i`, `p` satisfy the following conditions:
+    /// Implementations must ensure that `n` and `p` satisfy the following conditions:
     ///
     /// * `n` and `p` must not be altered at any time.
     ///
-    /// * `i` must be initialized with `1` and may only be altered through `Meta::gen`.
-    ///
     /// * `p` must point to the first element of a valid `u8` array of length `n + 1`.
     ///   The elements in this array, except the first one, must be initialized with
-    ///   values from `1` to `n` in order, and may only be altered through `Meta::gen`.
-    pub unsafe trait Meta {
-        /// Returns `(n, i, p)`.
-        fn get_nip(&mut self) -> (u8, u8, *mut u8);
-        /// Sets `i`.
-        fn set_i(&mut self, i: u8);
+    ///   values from `1` to `n` in order, and may only be altered through `Container::gen`.
+    pub unsafe trait Container {
+        /// Returns the size and the pointer.
+        fn size_ptr(&mut self) -> (usize, *mut u8);
 
         #[inline]
-        fn gen(&mut self) -> Option<IndexPair> {
-            let (n, i, p) = self.get_nip();
+        fn gen(&mut self, i_reg: &mut usize) -> Option<IndexPair> {
+            let (n, p) = self.size_ptr();
+            let i = *i_reg;
             if i >= n {
                 // All permutations are exhausted.
                 return None;
             }
-            let i = i as usize;
 
             // Decrement `p[i]` by 1.
             // SAFETY: `i` is checked to be less than `n`.
@@ -296,7 +279,7 @@ mod internal {
                 i += 1;
             }
             // Here we have `1 <= i <= n` since `i` was incremented from 1.
-            self.set_i(i as u8);
+            *i_reg = i;
 
             Some(out)
         }

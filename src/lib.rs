@@ -26,10 +26,7 @@ pub mod meta;
 use meta::*;
 
 /// Trait for permuting arrays and slices.
-pub trait Perm<T, M: Meta>: internal::Sealed {
-    // /// Creates a `MetaPerm` of the length.
-    // fn meta(&mut self) -> MetaPerm<M>;
-
+pub trait Perm<T, C: Container>: internal::Sealed {
     /// Walks through all possible permutations in place.
     fn permute(&mut self, f: impl Fn(&Self));
 }
@@ -41,6 +38,7 @@ impl<T, const N: usize> Perm<T, Const<N>> for [T; N] {
         loop {
             f(self);
             if let Some(p) = mp.gen() {
+                // SAFETY: We created `mp` with the same length as the array.
                 unsafe { p.swap_unchecked(self) }
             } else {
                 break;
@@ -56,6 +54,7 @@ impl<T> Perm<T, Dyn> for [T] {
         loop {
             f(self);
             if let Some(p) = mp.gen() {
+                // SAFETY: We created `mp` with the same length as the slice.
                 unsafe { p.swap_unchecked(self) }
             } else {
                 break;
