@@ -5,8 +5,8 @@ extern crate test;
 use quickperm::meta::{Const, MetaPerm};
 use test::{black_box, Bencher};
 
-macro_rules! gen_perm {
-    ($group:ident, $($x:literal),+ $(,)?) => {
+macro_rules! gen {
+    ($($x:literal),+ $(,)?) => {
         $(
             paste::paste! {
                 #[bench]
@@ -23,4 +23,4 @@ macro_rules! gen_perm {
     };
 }
 
-gen_perm!(group, 3, 4, 5, 6, 7, 8, 9);
+gen!(3, 4, 5, 6, 7, 8, 9);

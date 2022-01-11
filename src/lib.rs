@@ -2,7 +2,13 @@
 //!
 //! A minimum-overhead Rust implementation of the [QuickPerm Algorithm](https://www.quickperm.org/).
 //!
-//! This crate provides quick approaches for generating permutations of both constant and dynamic size.
+//! This crate provides quick approaches for generating permutations of both constant and dynamic length.
+//!
+//! ## To-Do List
+//!
+//! * Idiomatic way to break from permuting (macros?).
+//!
+//! * *k*-permutations.
 //!
 //! ## Examples
 //!
@@ -13,8 +19,6 @@
 //! let mut arr = [1, 2, 3];
 //! arr.permute(|perm| println!("{:?}", perm));
 //! ```
-//!
-//! Currently there's no idiomatic way to break from permuting.
 
 #![no_std]
 #![warn(missing_docs, rust_2018_idioms)]

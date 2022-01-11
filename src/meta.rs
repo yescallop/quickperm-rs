@@ -152,6 +152,17 @@ impl<C: Container> MetaPerm<C> {
     pub fn gen(&mut self) -> Option<IndexPair> {
         self.container.gen(&mut self.i)
     }
+
+    /// Resets this `MetaPerm`.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if permutations are not yet exhausted.
+    #[inline]
+    pub fn reset(&mut self) {
+        assert!(self.i >= self.container.len(), "not yet exhausted");
+        self.i = 1;
+    }
 }
 
 /// Constant-sized meta-permutation generator.
@@ -185,9 +196,13 @@ impl<const N: usize> Const<N> {
 // The entire array is properly initialized in `MetaPerm::new_const`.
 unsafe impl<const N: usize> Container for Const<N> {
     #[inline]
-    fn size_ptr(&mut self) -> (usize, *mut u8) {
-        let p = self as *mut _ as *mut u8;
-        (N, p)
+    fn len(&self) -> usize {
+        N
+    }
+
+    #[inline]
+    fn ptr(&mut self) -> *mut u8 {
+        self as *mut _ as _
     }
 }
 
@@ -201,11 +216,11 @@ pub struct Dyn {
 impl Drop for Dyn {
     #[inline]
     fn drop(&mut self) {
-        let size = self.n + 1;
+        let len = self.n + 1;
         // SAFETY: `p` is allocated via `Vec` with capacity `n + 1`.
         // The entire array is properly initialized in `MetaPerm::new`.
         unsafe {
-            Vec::from_raw_parts(self.p, size, size);
+            Vec::from_raw_parts(self.p, len, len);
         }
     }
 }
@@ -214,8 +229,13 @@ impl Drop for Dyn {
 // The entire array is properly initialized in `MetaPerm::new`.
 unsafe impl Container for Dyn {
     #[inline]
-    fn size_ptr(&mut self) -> (usize, *mut u8) {
-        (self.n, self.p)
+    fn len(&self) -> usize {
+        self.n
+    }
+
+    #[inline]
+    fn ptr(&mut self) -> *mut u8 {
+        self.p
     }
 }
 
@@ -224,7 +244,7 @@ mod internal {
 
     /// Trait for a container used by `MetaPerm`.
     ///
-    /// This trait requires two variables, a size `n` and a pointer `p`.
+    /// This trait requires two variables, a length `n` and a pointer `p`.
     ///
     /// # Safety
     ///
@@ -236,17 +256,22 @@ mod internal {
     ///   The elements in this array, except the first one, must be initialized with
     ///   values from `1` to `n` in order, and may only be altered through `Container::gen`.
     pub unsafe trait Container {
-        /// Returns the size and the pointer.
-        fn size_ptr(&mut self) -> (usize, *mut u8);
+        /// Returns the length.
+        fn len(&self) -> usize;
+
+        /// Returns the pointer.
+        fn ptr(&mut self) -> *mut u8;
 
         #[inline]
         fn gen(&mut self, i_reg: &mut usize) -> Option<IndexPair> {
-            let (n, p) = self.size_ptr();
+            let n = self.len();
             let i = *i_reg;
             if i >= n {
                 // All permutations are exhausted.
                 return None;
             }
+
+            let p = self.ptr();
 
             // Decrement `p[i]` by 1.
             // SAFETY: `i` is checked to be less than `n`.
