@@ -93,26 +93,15 @@ pub struct MetaPerm<C: Container> {
 
 impl<const N: usize> MetaPerm<Const<N>> {
     /// Creates a new `MetaPerm` of constant length `N`.
-    ///
-    /// # Compile-Time Errors
-    ///
-    /// An `N` greater than `u8::MAX` will trigger a compile-time error of overflow.
     #[inline]
     pub const fn new_const() -> Self {
-        MetaPerm {
-            container: Const {
-                p_head: 0,
-                p_body: Const::P_BODY,
-            },
+        Self {
+            container: Const::INIT,
             i: 1,
         }
     }
 
     /// Creates a new `MetaPerm` of the same length as an array.
-    ///
-    /// # Compile-Time Errors
-    ///
-    /// An array of length greater than `u8::MAX` will trigger a compile-time error of overflow.
     #[inline]
     pub const fn from_array<T>(_arr: &[T; N]) -> Self {
         Self::new_const()
@@ -121,20 +110,15 @@ impl<const N: usize> MetaPerm<Const<N>> {
 
 impl MetaPerm<Dyn> {
     /// Creates a new `MetaPerm` of dynamic length `n`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `n` is greater than `u8::MAX`.
     #[inline]
     pub fn new(n: usize) -> Self {
-        assert!(n <= u8::MAX as usize);
+        let p = ManuallyDrop::new(Vec::<usize>::with_capacity(n + 1)).as_mut_ptr();
 
-        let mut p = ManuallyDrop::new(Vec::<u8>::with_capacity(n + 1));
-        let p = p.as_mut_ptr();
-        // SAFETY: The capacity is `n + 1`, exactly the number of bytes written.
+        // SAFETY: The index is always less than the capacity `n + 1`.
+        // Overflow never happens because `Vec::with_capacity` would have panicked.
         unsafe {
             for i in 0..n + 1 {
-                *p.add(i) = i as u8;
+                *p.add(i) = i;
             }
         }
 
@@ -154,9 +138,9 @@ impl<C: Container> MetaPerm<C> {
     }
 
     /// Resets this `MetaPerm`.
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// Panics if permutations are not yet exhausted.
     #[inline]
     pub fn reset(&mut self) {
@@ -165,34 +149,33 @@ impl<C: Container> MetaPerm<C> {
     }
 }
 
-/// Constant-sized meta-permutation generator.
+/// Constant-sized container used by `MetaPerm`.
 ///
-/// The const generic `N` indicates the length of permutations, which is at most
-/// `u8::MAX` since the inner implementation uses a `u8` array to store the state.
-/// This constraint, if violated, will trigger a compile-time error of overflow.
+/// The const generic `N` indicates the length of permutations.
 #[derive(Debug)]
 #[repr(C)]
 pub struct Const<const N: usize> {
-    p_head: u8,
-    p_body: [u8; N],
+    p_head: usize,
+    p_body: [usize; N],
 }
 
 impl<const N: usize> Const<N> {
-    // [1, 2, 3, ..., N]
-    #[deny(const_err)]
-    const P_BODY: [u8; N] = {
-        let mut out = [0; N];
-        let mut i = 0;
-        while i < N {
-            out[i] = i as u8 + 1;
-            i += 1;
-        }
-        out
+    // [0, 1, 2, ..., N].
+    const INIT: Self = Const {
+        p_head: 0,
+        p_body: {
+            let mut out = [0; N];
+            let mut i = 0;
+            while i < N {
+                out[i] = i + 1;
+                i += 1;
+            }
+            out
+        },
     };
 }
 
-// SAFETY: A `Const<N>` can be interpreted as a valid `u8` array of length `N + 1`,
-// because `Const<N>` has a size of `N + 1` and an alignment of 1.
+// SAFETY: A `Const<N>` can be interpreted as a valid `usize` array of length `N + 1`,
 // The entire array is properly initialized in `MetaPerm::new_const`.
 unsafe impl<const N: usize> Container for Const<N> {
     #[inline]
@@ -201,26 +184,25 @@ unsafe impl<const N: usize> Container for Const<N> {
     }
 
     #[inline]
-    fn ptr(&mut self) -> *mut u8 {
+    fn ptr(&mut self) -> *mut usize {
         self as *mut _ as _
     }
 }
 
-/// Dynamic-sized meta-permutation generator.
+/// Dynamic-sized container used by `MetaPerm`.
 #[derive(Debug)]
 pub struct Dyn {
-    p: *mut u8,
+    p: *mut usize,
     n: usize,
 }
 
 impl Drop for Dyn {
     #[inline]
     fn drop(&mut self) {
-        let len = self.n + 1;
         // SAFETY: `p` is allocated via `Vec` with capacity `n + 1`.
-        // The entire array is properly initialized in `MetaPerm::new`.
+        // It is fine to forget `usize`s.
         unsafe {
-            Vec::from_raw_parts(self.p, len, len);
+            Vec::from_raw_parts(self.p, 0, self.n + 1);
         }
     }
 }
@@ -234,7 +216,7 @@ unsafe impl Container for Dyn {
     }
 
     #[inline]
-    fn ptr(&mut self) -> *mut u8 {
+    fn ptr(&mut self) -> *mut usize {
         self.p
     }
 }
@@ -252,7 +234,7 @@ mod internal {
     ///
     /// * `n` and `p` must not be altered at any time.
     ///
-    /// * `p` must point to the first element of a valid `u8` array of length `n + 1`.
+    /// * `p` must point to the first element of a valid `usize` array of length `n + 1`.
     ///   The elements in this array, except the first one, must be initialized with
     ///   values from `1` to `n` in order, and may only be altered through `Container::gen`.
     pub unsafe trait Container {
@@ -260,7 +242,7 @@ mod internal {
         fn len(&self) -> usize;
 
         /// Returns the pointer.
-        fn ptr(&mut self) -> *mut u8;
+        fn ptr(&mut self) -> *mut usize;
 
         #[inline]
         fn gen(&mut self, i_reg: &mut usize) -> Option<IndexPair> {
@@ -278,7 +260,7 @@ mod internal {
             let pi = unsafe { &mut *p.add(i) };
             *pi -= 1;
             // If `i` is odd, then let `j = p[i]` otherwise let `j = 0`.
-            let j = if i & 1 != 0 { *pi as usize } else { 0 };
+            let j = if i & 1 != 0 { *pi } else { 0 };
 
             // SAFETY: `i` is non-zero and less than `n` since:
             // 1) `i` was initially 1, and after each iteration we have `1 <= i <= n`;
@@ -290,6 +272,15 @@ mod internal {
             // 2) `j` is either `p[i]` or 0, which is less than `i` and thus than `n`.
             let out = unsafe { IndexPair::new(j, i) };
 
+            // This loop is perf-sensitive as benchmarked.
+            // Ideally for `Const` it yields such asm on x86:
+            //
+            // .LBB3_3:
+            //     mov	qword ptr [rsp + 8*rbx + 80], rbx
+            //     mov	rdi, qword ptr [rsp + 8*rbx + 88]
+            //     inc	rbx
+            //     test	rdi, rdi
+            //     je	.LBB3_3
             let mut i = 1;
             loop {
                 // SAFETY: `i` is never greater than `n` since:
@@ -300,7 +291,7 @@ mod internal {
                 if *pi != 0 {
                     break;
                 }
-                *pi = i as u8;
+                *pi = i;
                 i += 1;
             }
             // Here we have `1 <= i <= n` since `i` was incremented from 1.
