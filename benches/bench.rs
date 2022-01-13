@@ -13,7 +13,7 @@ macro_rules! gen {
                 fn [<perm_ $x>](b: &mut Bencher) {
                     b.iter(|| {
                         let mut perm = MetaPerm::<Const<$x>>::new_const();
-                        while let Some(x) = perm.gen() {
+                        while let Some(x) = perm.gen_even() {
                             black_box(x);
                         }
                     });

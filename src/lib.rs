@@ -22,6 +22,7 @@
 
 #![no_std]
 #![warn(missing_docs, rust_2018_idioms)]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 extern crate alloc;
 
@@ -30,39 +31,31 @@ pub mod meta;
 use meta::*;
 
 /// Trait for permuting arrays and slices.
-pub trait Perm<T, C: Container>: internal::Sealed {
-    /// Walks through all possible permutations in place.
+pub trait Perm<T>: internal::Sealed + AsMut<[T]> {
+    /// Permutes the target in place.
     fn permute(&mut self, f: impl Fn(&Self));
 }
 
-impl<T, const N: usize> Perm<T, Const<N>> for [T; N] {
+impl<T, const N: usize> Perm<T> for [T; N] {
     #[inline]
     fn permute(&mut self, f: impl Fn(&[T; N])) {
-        let mut mp = MetaPerm::from_array(self);
-        loop {
-            f(self);
-            if let Some(p) = mp.gen() {
-                // SAFETY: We created `mp` with the same length as the array.
-                unsafe { p.swap_unchecked(self) }
-            } else {
-                break;
-            }
+        if self.len() < 2 {
+            f(self)
+        } else {
+            let mut mp = MetaPerm::from_array(self);
+            mp.permute(self, f);
         }
     }
 }
 
-impl<T> Perm<T, Dyn> for [T] {
+impl<T> Perm<T> for [T] {
     #[inline]
     fn permute(&mut self, f: impl Fn(&[T])) {
-        let mut mp = MetaPerm::new(self.len());
-        loop {
-            f(self);
-            if let Some(p) = mp.gen() {
-                // SAFETY: We created `mp` with the same length as the slice.
-                unsafe { p.swap_unchecked(self) }
-            } else {
-                break;
-            }
+        if self.len() < 2 {
+            f(self)
+        } else {
+            let mut mp = MetaPerm::new(self.len());
+            mp.permute(self, f);
         }
     }
 }
