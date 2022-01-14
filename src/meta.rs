@@ -1,14 +1,19 @@
 //! Meta-permutation generators.
 
-use alloc::vec::Vec;
-use core::{
-    fmt,
-    mem::{self, ManuallyDrop},
-    num::NonZeroUsize,
-};
+use alloc::{boxed::Box, vec::Vec};
+use core::{fmt, mem, num::NonZeroUsize};
 pub(crate) use internal::Container;
 
 use crate::Perm;
+
+#[cfg(any(target_pointer_width = "8", target_pointer_width = "16"))]
+type UFast = usize;
+#[cfg(any(
+    target_pointer_width = "32",
+    target_pointer_width = "64",
+    target_pointer_width = "128"
+))]
+type UFast = u32;
 
 /// A pair of distinct indexes.
 ///
@@ -79,6 +84,9 @@ impl fmt::Display for IndexPair {
 }
 
 /// Generic meta-permutation generator.
+///
+/// The length of a `MetaPerm` may not exceed [`i32::MAX`] on a 32-bit or higher target,
+/// or [`isize::MAX`] on a 16-bit or lower target.
 #[derive(Debug)]
 pub struct MetaPerm<C: Container> {
     container: C,
@@ -89,10 +97,10 @@ impl<const N: usize> MetaPerm<Const<N>> {
     ///
     /// # Panics
     ///
-    /// Panics if `N < 2`.
+    /// Panics if `n` is less than 2 or too large.
     #[inline]
     pub const fn new_const() -> Self {
-        assert!(N >= 2);
+        assert!(N >= 2 && N >> (UFast::BITS - 1) == 0);
         Self {
             container: Const::INIT,
         }
@@ -102,7 +110,7 @@ impl<const N: usize> MetaPerm<Const<N>> {
     ///
     /// # Panics
     ///
-    /// Panics if the array has a length less than 2.
+    /// Panics if the array has a length less than 2 or too large.
     #[inline]
     pub const fn from_array<T>(_arr: &[T; N]) -> Self {
         Self::new_const()
@@ -114,22 +122,27 @@ impl MetaPerm<Dyn> {
     ///
     /// # Panics
     ///
-    /// Panics if `n < 2`.
+    /// Panics if `n` is less than 2 or too large.
     #[inline]
     pub fn new(n: usize) -> Self {
-        assert!(n >= 2);
-        let p = ManuallyDrop::new(Vec::<usize>::with_capacity(n + 1)).as_mut_ptr();
+        assert!(n >= 2 && n >> (UFast::BITS - 1) == 0);
+        let mut vec = Vec::<UFast>::with_capacity(n);
 
-        // SAFETY: The index is always less than the capacity `n + 1`.
-        // Overflow never happens because `Vec::with_capacity` would have panicked.
         unsafe {
-            for i in 0..n + 1 {
-                *p.add(i) = i;
+            // SAFETY: The index is always less than the capacity `n`.
+            let p = vec.as_mut_ptr();
+            for i in 0..n {
+                // This won't overflow because we have at least one extra bit.
+                *p.add(i) = i as UFast + 1;
             }
+            // SAFETY: We just initialized the entire `Vec`.
+            vec.set_len(n);
         }
 
         MetaPerm {
-            container: Dyn { p, n },
+            container: Dyn {
+                inner: vec.into_boxed_slice(),
+            },
         }
     }
 }
@@ -181,19 +194,17 @@ impl<C: Container> MetaPerm<C> {
 #[derive(Debug)]
 #[repr(C)]
 pub struct Const<const N: usize> {
-    p_head: usize,
-    p_body: [usize; N],
+    inner: [UFast; N],
 }
 
 impl<const N: usize> Const<N> {
-    // [0, 1, 2, ..., N].
+    // [1, 2, ..., N].
     const INIT: Self = Const {
-        p_head: 0,
-        p_body: {
+        inner: {
             let mut out = [0; N];
             let mut i = 0;
             while i < N {
-                out[i] = i + 1;
+                out[i] = i as UFast + 1;
                 i += 1;
             }
             out
@@ -201,8 +212,7 @@ impl<const N: usize> Const<N> {
     };
 }
 
-// SAFETY: A `Const<N>` can be interpreted as a valid `usize` array of length `N + 1`,
-// The entire array is properly initialized in `MetaPerm::new_const`.
+// SAFETY: The entire array is properly initialized in `MetaPerm::new_const`.
 unsafe impl<const N: usize> Container for Const<N> {
     #[inline]
     fn len(&self) -> usize {
@@ -210,45 +220,32 @@ unsafe impl<const N: usize> Container for Const<N> {
     }
 
     #[inline]
-    fn ptr(&mut self) -> *mut usize {
-        self as *mut _ as _
+    fn ptr(&mut self) -> *mut UFast {
+        self.inner.as_mut_ptr()
     }
 }
 
 /// Dynamic-sized container used by `MetaPerm`.
 #[derive(Debug)]
 pub struct Dyn {
-    p: *mut usize,
-    n: usize,
+    inner: Box<[UFast]>,
 }
 
-impl Drop for Dyn {
-    #[inline]
-    fn drop(&mut self) {
-        // SAFETY: `p` is allocated via `Vec` with capacity `n + 1`.
-        // It is fine to forget `usize`s.
-        unsafe {
-            Vec::from_raw_parts(self.p, 0, self.n + 1);
-        }
-    }
-}
-
-// SAFETY: `p` is allocated via `Vec` with capacity `n + 1`.
-// The entire array is properly initialized in `MetaPerm::new`.
+// SAFETY: The entire slice is properly initialized in `MetaPerm::new`.
 unsafe impl Container for Dyn {
     #[inline]
     fn len(&self) -> usize {
-        self.n
+        self.inner.len()
     }
 
     #[inline]
-    fn ptr(&mut self) -> *mut usize {
-        self.p
+    fn ptr(&mut self) -> *mut UFast {
+        self.inner.as_mut_ptr()
     }
 }
 
 mod internal {
-    use super::IndexPair;
+    use super::*;
 
     /// Trait for a container used by `MetaPerm`.
     ///
@@ -262,45 +259,47 @@ mod internal {
     ///
     /// * `n` and `p` must not be altered at any time.
     ///
-    /// * `p` must point to the first element of a valid `usize` array of length `n + 1`.
-    ///   The elements in this array, except the first and second ones, must be initialized with
+    /// * `p` must point to the first element of a valid `usize` array of length `n`.
+    ///   The elements in this array, except the first one, must be initialized with
     ///   values from `2` to `n` in order, and may only be altered through `Container::gen`.
     pub unsafe trait Container {
         /// Returns the length.
         fn len(&self) -> usize;
 
         /// Returns the pointer.
-        fn ptr(&mut self) -> *mut usize;
+        fn ptr(&mut self) -> *mut UFast;
 
         #[inline]
         fn gen_even(&mut self) -> Option<IndexPair> {
             let n = self.len();
-            let p = self.ptr();
+            let mut p = self.ptr();
 
             // This loop is perf-sensitive as benchmarked.
-            // Ideally for `Const` it yields such asm on x86:
+            // Ideally for `Const` it yields such asm on x86-64:
             //
             // .LBB3_3:
-            //     mov	qword ptr [rsp + 8*rax + 64], rax
-            //     mov	rcx, qword ptr [rsp + 8*rax + 72]
+            //     mov	dword ptr [rsp + 4*rax + 28], eax
+            //     mov	edx, dword ptr [rsp + 4*rax + 32]
             //     add	rax, 1
-            //     test	rcx, rcx
+            //     test	edx, edx
             //     je	.LBB3_3
-            let mut i = 2;
+            let mut i: UFast = 2;
             let pi = loop {
-                // SAFETY: `i` is never greater than `n` since:
+                // SAFETY: `p` is never out of bounds since:
                 // 1) this loop is only reachable for `n >= 2`;
-                // 2) the last element of `p` is initially `n` and never altered, which,
-                //    when reached, will immediately break the loop with `i == n`.
-                let pi = unsafe { &mut *p.add(i) };
-                if *pi != 0 {
-                    break pi;
+                // 2) the last element of `p` is initially `n` and never altered,
+                //    which, when reached, will immediately break the loop.
+                unsafe {
+                    p = p.add(1);
+                    if *p != 0 {
+                        break &mut *p;
+                    }
+                    *p = i;
                 }
-                *pi = i;
                 i += 1;
             };
 
-            if i >= n {
+            if i >= n as UFast {
                 // All permutations are exhausted.
                 return None;
             }
@@ -316,7 +315,7 @@ mod internal {
             // 1) `p[i]` was initially `i`, but has been decremented at least once
             //    and is thus less than `i`;
             // 2) `j` is either `p[i]` or 0, which is less than `i` and thus than `n`.
-            Some(unsafe { IndexPair::new(j, i) })
+            Some(unsafe { IndexPair::new(j as usize, i as usize) })
         }
     }
 }
