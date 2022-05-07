@@ -21,7 +21,12 @@
 //! ```
 
 #![no_std]
-#![warn(missing_docs, rust_2018_idioms)]
+#![warn(
+    missing_docs,
+    rust_2018_idioms,
+    unreachable_pub,
+    missing_debug_implementations
+)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 extern crate alloc;

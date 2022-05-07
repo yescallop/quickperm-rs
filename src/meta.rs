@@ -168,6 +168,8 @@ impl<C: Container> MetaPerm<C> {
     /// This `MetaPerm` will be reset after permuting.
     #[inline]
     pub fn permute<T, P: Perm<T> + ?Sized>(&mut self, target: &mut P, f: impl Fn(&P)) {
+        // SAFETY: The safety of calling `as_mut` multiple times relies on the fact that
+        // `Perm` is sealed.
         assert!(self.len() == target.as_mut().len(), "length mismatch");
         loop {
             // Even indexes.
